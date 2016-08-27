@@ -27,11 +27,11 @@ from tf.transformations import euler_from_quaternion
 import message_filters
 
 
-# def pose_update_callback(slam_out_pose):
-#     q = [slam_out_pose.pose.orientation.x, slam_out_pose.pose.orientation.y, slam_out_pose.pose.orientation.z,
-#          slam_out_pose.pose.orientation.w]
+# def pose_update_callback(current_pose):
+#     q = [current_pose.pose.orientation.x, current_pose.pose.orientation.y, current_pose.pose.orientation.z,
+#          current_pose.pose.orientation.w]
 #     angles = euler_from_quaternion(q)
-#     pose = np.array([slam_out_pose.pose.position.x, slam_out_pose.pose.position.y, angles[2]])
+#     pose = np.array([current_pose.pose.position.x, current_pose.pose.position.y, angles[2]])
 #     gp_map.current_pose = pose
 #
 #
@@ -40,11 +40,11 @@ import message_filters
 #     gp_map.set_scan(scan)
 
 
-def msg_callback(slam_out_pose, scan):
-    q = [slam_out_pose.pose.orientation.x, slam_out_pose.pose.orientation.y, slam_out_pose.pose.orientation.z,
-         slam_out_pose.pose.orientation.w]
+def msg_callback(current_pose, scan):
+    q = [current_pose.pose.orientation.x, current_pose.pose.orientation.y, current_pose.pose.orientation.z,
+         current_pose.pose.orientation.w]
     angles = euler_from_quaternion(q)
-    pose = np.array([slam_out_pose.pose.position.x, slam_out_pose.pose.position.y, angles[2]])
+    pose = np.array([current_pose.pose.position.x, current_pose.pose.position.y, angles[2]])
     gp_map.current_pose = pose
 
     scan.ranges = np.asarray(scan.ranges)
@@ -52,10 +52,10 @@ def msg_callback(slam_out_pose, scan):
 
 
 def listener():
-    # slam_sub = message_filters.Subscriber("slam_out_pose", numpy_msg(PoseStamped), pose_update_callback)
+    # slam_sub = message_filters.Subscriber("current_pose", numpy_msg(PoseStamped), pose_update_callback)
     # scan_sub = message_filters.Subscriber("scan_lsl", numpy_msg(LaserScan), laser_scan_callback)
-    slam_sub = message_filters.Subscriber("slam_out_pose", numpy_msg(PoseStamped))
-    scan_sub = message_filters.Subscriber("scan_lsl", numpy_msg(LaserScan))
+    slam_sub = message_filters.Subscriber("pose_from_map", numpy_msg(PoseStamped))
+    scan_sub = message_filters.Subscriber("scan", numpy_msg(LaserScan))
     ts = message_filters.ApproximateTimeSynchronizer([slam_sub, scan_sub], 5, 5)
     ts.registerCallback(msg_callback)
     rospy.spin()
