@@ -33,16 +33,14 @@ class PoseFromMapTF:
         pose_msg.header.stamp = now
         pose_msg.header.frame_id = self.map_frame
 
-        # for _ in trans:
-        pose_msg.pose.pose.position.x = trans[0]
-        pose_msg.pose.pose.position.y = trans[1]
-        pose_msg.pose.pose.position.z = trans[2]
+        pose_msg.pose.position.x = trans[0]
+        pose_msg.pose.position.y = trans[1]
+        pose_msg.pose.position.z = trans[2]
 
-        # for _ in rot:
-        pose_msg.pose.pose.orientation.x = rot[0]
-        pose_msg.pose.pose.orientation.y = rot[1]
-        pose_msg.pose.pose.orientation.z = rot[2]
-        pose_msg.pose.pose.orientation.w = rot[3]
+        pose_msg.pose.orientation.x = rot[0]
+        pose_msg.pose.orientation.y = rot[1]
+        pose_msg.pose.orientation.z = rot[2]
+        pose_msg.pose.orientation.w = rot[3]
 
         self.pose_pub.publish(pose_msg)
 

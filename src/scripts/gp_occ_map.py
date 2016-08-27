@@ -27,19 +27,6 @@ from tf.transformations import euler_from_quaternion
 import message_filters
 
 
-# def pose_update_callback(current_pose):
-#     q = [current_pose.pose.orientation.x, current_pose.pose.orientation.y, current_pose.pose.orientation.z,
-#          current_pose.pose.orientation.w]
-#     angles = euler_from_quaternion(q)
-#     pose = np.array([current_pose.pose.position.x, current_pose.pose.position.y, angles[2]])
-#     gp_map.current_pose = pose
-#
-#
-# def laser_scan_callback(scan):
-#     scan.ranges = np.asarray(scan.ranges)
-#     gp_map.set_scan(scan)
-
-
 def msg_callback(current_pose, scan):
     q = [current_pose.pose.orientation.x, current_pose.pose.orientation.y, current_pose.pose.orientation.z,
          current_pose.pose.orientation.w]
@@ -52,10 +39,8 @@ def msg_callback(current_pose, scan):
 
 
 def listener():
-    # slam_sub = message_filters.Subscriber("current_pose", numpy_msg(PoseStamped), pose_update_callback)
-    # scan_sub = message_filters.Subscriber("scan_lsl", numpy_msg(LaserScan), laser_scan_callback)
     slam_sub = message_filters.Subscriber("pose_from_map", numpy_msg(PoseStamped))
-    scan_sub = message_filters.Subscriber("scan", numpy_msg(LaserScan))
+    scan_sub = message_filters.Subscriber("base_scan", numpy_msg(LaserScan))
     ts = message_filters.ApproximateTimeSynchronizer([slam_sub, scan_sub], 5, 5)
     ts.registerCallback(msg_callback)
     rospy.spin()
@@ -77,7 +62,6 @@ def occ_map_build_callback():
 
             goal_msg = gp_map.goal_message()
             goal_pub.publish(goal_msg)
-            # rospy.loginfo("Before plot current map.")
             # plot_current_map()
 
 
