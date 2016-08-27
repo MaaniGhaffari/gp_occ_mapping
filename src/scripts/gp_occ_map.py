@@ -24,24 +24,40 @@ from sensor_msgs.msg import LaserScan
 from nav_msgs.msg import OccupancyGrid, MapMetaData
 from nav_msgs.srv import GetMap
 from tf.transformations import euler_from_quaternion
+import message_filters
 
 
-def pose_update_callback(slam_out_pose):
+# def pose_update_callback(slam_out_pose):
+#     q = [slam_out_pose.pose.orientation.x, slam_out_pose.pose.orientation.y, slam_out_pose.pose.orientation.z,
+#          slam_out_pose.pose.orientation.w]
+#     angles = euler_from_quaternion(q)
+#     pose = np.array([slam_out_pose.pose.position.x, slam_out_pose.pose.position.y, angles[2]])
+#     gp_map.current_pose = pose
+#
+#
+# def laser_scan_callback(scan):
+#     scan.ranges = np.asarray(scan.ranges)
+#     gp_map.set_scan(scan)
+
+
+def msg_callback(slam_out_pose, scan):
     q = [slam_out_pose.pose.orientation.x, slam_out_pose.pose.orientation.y, slam_out_pose.pose.orientation.z,
          slam_out_pose.pose.orientation.w]
     angles = euler_from_quaternion(q)
     pose = np.array([slam_out_pose.pose.position.x, slam_out_pose.pose.position.y, angles[2]])
     gp_map.current_pose = pose
 
-
-def laser_scan_callback(scan):
     scan.ranges = np.asarray(scan.ranges)
     gp_map.set_scan(scan)
 
 
 def listener():
-    rospy.Subscriber("slam_out_pose", numpy_msg(PoseStamped), pose_update_callback)
-    rospy.Subscriber("scan", numpy_msg(LaserScan), laser_scan_callback)
+    # slam_sub = message_filters.Subscriber("slam_out_pose", numpy_msg(PoseStamped), pose_update_callback)
+    # scan_sub = message_filters.Subscriber("scan_lsl", numpy_msg(LaserScan), laser_scan_callback)
+    slam_sub = message_filters.Subscriber("slam_out_pose", numpy_msg(PoseStamped))
+    scan_sub = message_filters.Subscriber("scan_lsl", numpy_msg(LaserScan))
+    ts = message_filters.ApproximateTimeSynchronizer([slam_sub, scan_sub], 5, 5)
+    ts.registerCallback(msg_callback)
     rospy.spin()
 
 
@@ -61,7 +77,7 @@ def occ_map_build_callback():
 
             goal_msg = gp_map.goal_message()
             goal_pub.publish(goal_msg)
-
+            # rospy.loginfo("Before plot current map.")
             # plot_current_map()
 
 
@@ -79,7 +95,7 @@ def plot_current_map():
 
     plt.figure("GP Occupancy Map")
     plt.clf()
-    plt.pcolor(gp_map.X, gp_map.Y, gp_map.map, vmin=0, vmax=1)
+    plt.pcolor(gp_map.X, gp_map.Y, np.reshape(gp_map.occ_map.map, (gp_map.occ_map.width, gp_map.occ_map.height)), vmin=0, vmax=1)
     plt.colorbar()
     if not gp_map.current_pose is None:
         plt.quiver(gp_map.current_pose[0], gp_map.current_pose[1], 1. * np.cos(gp_map.current_pose[2]),
@@ -89,7 +105,7 @@ def plot_current_map():
 
     plt.figure("GP Frontier Map")
     plt.clf()
-    plt.pcolor(gp_map.X, gp_map.Y, gp_map.frontier_map, vmin=0, vmax=1)
+    plt.pcolor(gp_map.X, gp_map.Y, np.reshape(gp_map.frontier_map, (gp_map.occ_map.width, gp_map.occ_map.height)), vmin=0, vmax=1)
     plt.quiver(gp_map.current_pose[0], gp_map.current_pose[1], 1. * np.cos(gp_map.current_pose[2]),
                1. * np.sin(gp_map.current_pose[2]), angles='xy', scale_units='xy', scale=1,
                edgecolors='m', pivot='mid', facecolor='none', linewidth=1, width=0.001, headwidth=400, headlength=800)

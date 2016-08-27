@@ -14,6 +14,7 @@
 
 import numpy as np
 from scipy.cluster.vq import *
+from scipy import spatial
 import pyGPs
 import copy
 import rospy
@@ -37,23 +38,25 @@ class GPRMap(pyGPs.GPR):
         self.map_res = (self.map_limit[1] - self.map_limit[0]) / self.width
         self.td_res = .5
 
-        self.map = .5 * np.ones((self.width, self.height), dtype=np.float)
-        self.map_var = np.ones((self.width, self.height), dtype=np.float)
+        self.map = .5 * np.ones(self.map_size, dtype=np.float)
+        self.map_var = np.ones(self.map_size, dtype=np.float)
 
         self.x = np.zeros((1, 2))
         self.y = np.zeros((1, 1))
         self.X, self.Y = np.meshgrid(np.linspace(self.map_limit[0], self.map_limit[1], self.width),
                                      np.linspace(self.map_limit[2], self.map_limit[3], self.height))
+        self.mapkdt = spatial.KDTree(zip(self.X.ravel(), self.Y.ravel()))
 
-        self.local_width = 80
-        self.local_height = 80
+        self.local_width = 160
+        self.local_height = 160
         self.local_map_size = self.local_width * self.local_height
-        self.local_map_limit = [-4.0, 4.0, -4.0, 4.0]
-        self.local_map = .5 * np.ones((self.local_width, self.local_height), dtype=np.float)
-        self.local_map_var = np.ones((self.local_width, self.local_height), dtype=np.float)
+        self.local_map_limit = [-8.0, 8.0, -8.0, 8.0]
+        self.local_map = .5 * np.ones(self.local_map_size, dtype=np.float)
+        self.local_map_var = np.ones(self.local_map_size, dtype=np.float)
         self.local_X, self.local_Y = np.meshgrid(
             np.linspace(self.local_map_limit[0], self.local_map_limit[1], self.local_width),
             np.linspace(self.local_map_limit[2], self.local_map_limit[3], self.local_height))
+        self.local_mapkdt = spatial.KDTree(zip(self.local_X.ravel(), self.local_Y.ravel()))
         self.xs = np.vstack([self.local_X.reshape(self.local_Y.size), self.local_Y.reshape(self.local_Y.size)]).T
 
         self.current_pose = None
@@ -63,7 +66,7 @@ class GPRMap(pyGPs.GPR):
         # log_sigma=-1.1789938908586013)
         self.covfunc = pyGPs.cov.Matern(d=7)
         self.scan = None
-        self.max_range = 5.66
+        self.max_range = 8.0  # 5.66
         self.scan_skip = 10
         self.hyp_learned = False
         self.use_offline_hyp = True
@@ -75,6 +78,7 @@ class GPRMap(pyGPs.GPR):
         self.prob_occ = 0.65
         self.first_update = True
         self.ogmap = None
+        self.nnn = 8  # number of nearest neighbour!
 
     def set_scan(self, scan):
         self.scan = scan
@@ -82,8 +86,8 @@ class GPRMap(pyGPs.GPR):
     def logistic_reg(self, gamma=3.0):
         self.w = copy.deepcopy(self.ys2.min() / self.ys2)
         prob = 1.0 / (1.0 + np.exp(-gamma * self.ym * np.sqrt(self.w)))
-        self.local_map = copy.deepcopy(np.reshape(prob, (self.local_width, self.local_height)))
-        self.local_map_var = copy.deepcopy(np.reshape(self.ys2, (self.local_width, self.local_height)))
+        self.local_map = copy.deepcopy(prob)
+        self.local_map_var = copy.deepcopy(self.ys2)
 
     def transform2global(self):
         self.y = np.ones((1, 1))
@@ -134,20 +138,24 @@ class GPRMap(pyGPs.GPR):
                         self.y = np.vstack([self.y, [-1.]])
 
     def update_map(self):
-        iy = np.round(self.current_pose[0] / self.map_res) + (self.width / 2) - (self.local_width / 2)
-        ix = np.round(self.current_pose[1] / self.map_res) + (self.height / 2) - (self.local_height / 2)
-        for i in range(self.local_map.shape[0]):
-            for j in range(self.local_map.shape[1]):
-                if not (ix < 0 and iy < 0):
-                    if ix < self.width and iy < self.height:
-                        if self.first_update:
-                            self.local_map_var[i, j] *= 1000
-                            self.first_update = False
+        for i in range(self.local_map_size):
+                qx = self.current_pose[0] + self.local_mapkdt.data[i, 0] * np.cos(self.current_pose[2]) - \
+                     self.local_mapkdt.data[i, 1] * np.sin(self.current_pose[2])
+                qy = self.current_pose[1] + self.local_mapkdt.data[i, 0] * np.sin(self.current_pose[2]) + \
+                     self.local_mapkdt.data[i, 1] * np.cos(self.current_pose[2])
+                q = np.array([qx, qy])
+                if self.map_limit[0] < qx < self.map_limit[1] and self.map_limit[2] < qy < self.map_limit[3]:
+                    if self.first_update:
+                        self.local_map_var[i] *= 1000
+                        self.first_update = False
 
-                        z, sz = fusion_bcm(self.local_map[i, j], self.map[i + ix, j + iy], self.local_map_var[i, j],
-                                           self.map_var[i + ix, j + iy])
-                        self.map[i + ix, j + iy] = copy.deepcopy(z)
-                        self.map_var[i + ix, j + iy] = copy.deepcopy(sz)
+                    q_id = self.mapkdt.query(q, self.nnn)  # the id[1] is the index
+                    # Fuse the map to more than one neighbour due to the NN search error
+                    for j in range(self.nnn):
+                        z, sz = fusion_bcm(self.local_map[i], self.map[q_id[1][j]],
+                                           self.local_map_var[i], self.map_var[q_id[1][j]])
+                        self.map[q_id[1][j]] = copy.deepcopy(z)
+                        self.map_var[q_id[1][j]] = copy.deepcopy(sz)
 
     def replace_map(self):
         iy = np.round(self.current_pose[0] / self.map_res) + (self.width / 2) - (self.local_width / 2)
@@ -170,7 +178,11 @@ class GPRMap(pyGPs.GPR):
             self.meanfunc.hyp = self.off_mean_hyp
             self.covfunc.hyp = self.off_cov_hyp
             self.likfunc.hyp = self.off_lik_hyp
-            self.getPosterior()
+            try:
+                self.getPosterior()
+            except Exception, e:
+                rospy.loginfo('Failed to get the map posterior: ' + str(e))
+                return
 
         self.local_X, self.local_Y = np.meshgrid(
             np.linspace(self.local_map_limit[0] + self.current_pose[0], self.local_map_limit[1] + self.current_pose[0],
@@ -197,10 +209,10 @@ class GPRMap(pyGPs.GPR):
                 self.getPosterior()
 
             self.local_X, self.local_Y = np.meshgrid(
-                np.linspace(self.local_map_limit[0] + self.current_pose[0], self.local_map_limit[1] + self.current_pose[0],
-                            self.local_width),
-                np.linspace(self.local_map_limit[2] + self.current_pose[1], self.local_map_limit[3] + self.current_pose[1],
-                            self.local_height))
+                np.linspace(self.local_map_limit[0] + self.current_pose[0], self.local_map_limit[1] +
+                            self.current_pose[0], self.local_width),
+                np.linspace(self.local_map_limit[2] + self.current_pose[1], self.local_map_limit[3] +
+                            self.current_pose[1], self.local_height))
             self.xs = np.vstack([self.local_X.reshape(self.local_Y.size), self.local_Y.reshape(self.local_Y.size)]).T
 
             self.predict(self.xs)
@@ -223,10 +235,10 @@ class GPRMap(pyGPs.GPR):
                 self.getPosterior()
 
             self.local_X, self.local_Y = np.meshgrid(
-                np.linspace(self.local_map_limit[0] + self.current_pose[0], self.local_map_limit[1] + self.current_pose[0],
-                            self.local_width),
-                np.linspace(self.local_map_limit[2] + self.current_pose[1], self.local_map_limit[3] + self.current_pose[1],
-                            self.local_height))
+                np.linspace(self.local_map_limit[0] + self.current_pose[0], self.local_map_limit[1] +
+                            self.current_pose[0], self.local_width),
+                np.linspace(self.local_map_limit[2] + self.current_pose[1], self.local_map_limit[3] +
+                            self.current_pose[1], self.local_height))
             self.xs = np.vstack([self.local_X.reshape(self.local_Y.size), self.local_Y.reshape(self.local_Y.size)]).T
 
             self.predict(self.xs)
@@ -252,9 +264,20 @@ class TwoGPsMaps():
         self.scan = None
         self.num_of_clusters = 3
         self.expl_goal = None
-        self.goal_dist = np.zeros(self.num_of_clusters)
-        self.frontier_thresh = 0.55
+        self.cost = np.zeros(self.num_of_clusters)
+        self.infogain = np.zeros(self.num_of_clusters)
+        self.frontier_thr = 0.55
         self.beta = 4.
+        # Mutual information calculation parameters
+        self.z_hit = 0.7
+        self.z_rand = 0.1
+        self.z_short = 0.1
+        self.z_max = 0.1
+        self.lambda_short = 0.2
+        self.sigma_hit = 0.03
+        self.max_range = 4.0
+        self.p_rand = 1. / self.max_range
+        self.int_res = 0.3
 
     def set_scan(self, scan):
         self.occ_map.set_scan(scan)
@@ -269,49 +292,51 @@ class TwoGPsMaps():
         self.merge_map()
 
     def merge_map(self):
-        for i in range(self.map.shape[0]):
-            for j in range(self.map.shape[1]):
-                s2_occ = self.occ_map.map_var[i, j] / self.beta
-                s2_free = self.free_map.map_var[i, j]
-                z, sz = fusion_bcm(self.occ_map.map[i, j], self.free_map.map[i, j], s2_occ, s2_free)
-                self.map[i, j] = z
-                self.map_var[i, j] = sz
+        for i in range(self.occ_map.map_size):
+                s2_occ = self.occ_map.map_var[i] / self.beta
+                s2_free = self.free_map.map_var[i]
+                z, sz = fusion_bcm(self.occ_map.map[i], self.free_map.map[i], s2_occ, s2_free)
+                self.map[i] = z
+                self.map_var[i] = sz
 
     def build_frontier_map(self, gamma=3.0):
-        dox, doy = np.gradient(self.occ_map.map, self.occ_map.map_res)
-        dmx, dmy = np.gradient(self.map, self.occ_map.map_res)
+        dox, doy = np.gradient(np.reshape(self.occ_map.map, (self.occ_map.width, self.occ_map.height)),
+                               self.occ_map.map_res)
+        dmx, dmy = np.gradient(np.reshape(self.map, (self.occ_map.width, self.occ_map.height)),
+                               self.occ_map.map_res)
         obs_bound = np.abs(dox) + np.abs(doy)
         all_bound = np.abs(dmx) + np.abs(dmy)
-        meanf = all_bound - self.beta * (obs_bound + self.occ_map.map - 0.5)
+        meanf = all_bound.ravel() - self.beta * (obs_bound.ravel() + self.occ_map.map - 0.5)
         w = copy.deepcopy(self.map_var.min() / self.map_var)
         self.frontier_map = 1.0 / (1.0 + np.exp(-gamma * meanf * np.sqrt(w)))
+
+    def mutual_info_calc(self):
+        pass
 
     def exploration_node(self):
         self.build_frontier_map()
         frontiers_msg = PoseArray()
-        idf = np.nonzero(self.frontier_map > self.frontier_thresh)
+        idf = np.nonzero(self.frontier_map > self.frontier_thr)
         if np.size(idf) == 0:
             # print "No frontier has been detected"
             return frontiers_msg
-        data = np.column_stack([self.occ_map.X[idf[0], idf[1]], self.occ_map.Y[idf[0], idf[1]]])
+        data = np.column_stack([self.occ_map.mapkdt.data[idf], self.occ_map.mapkdt.data[idf]])
         try:
             self.expl_goal, idx = kmeans2(data, self.num_of_clusters)
         except:
-            # print "Clustering failed; No frontier has been detected"
-            # print "The experiment is done!"
             return frontiers_msg
 
         for i in range(self.num_of_clusters):
-            self.goal_dist[i] = np.sqrt((self.expl_goal[i, 0] - self.current_pose[0]) ** 2
-                                        + (self.expl_goal[i, 1] - self.current_pose[1]) ** 2)
-        id_nf = np.argsort(self.goal_dist, kind='mergesort')
+            self.cost[i] = np.sqrt((self.expl_goal[i, 0] - self.current_pose[0]) ** 2 +
+                                   (self.expl_goal[i, 1] - self.current_pose[1]) ** 2)
+        id_nf = np.argsort(self.cost, kind='mergesort')
 
         temp = copy.deepcopy(self.expl_goal)
         for i in range(self.num_of_clusters):
             self.expl_goal[i, :] = temp[id_nf[i], :]
 
         frontiers_msg.header.stamp = rospy.Time.now()
-        frontiers_msg.header.frame_id = "map"
+        frontiers_msg.header.frame_id = "map_world_frame"
 
         for i in range(self.expl_goal.shape[0]):
             frontiers_msg.poses.append(
@@ -323,7 +348,7 @@ class TwoGPsMaps():
 
         grid_msg = OccupancyGrid()
         grid_msg.header.stamp = rospy.Time.now()
-        grid_msg.header.frame_id = "map"
+        grid_msg.header.frame_id = "map_world_frame"
 
         grid_msg.info.resolution = self.occ_map.map_res
         grid_msg.info.width = self.occ_map.width
@@ -332,7 +357,7 @@ class TwoGPsMaps():
         grid_msg.info.origin = Pose(Point(self.occ_map.map_limit[0], self.occ_map.map_limit[2], 0),
                                     Quaternion(0, 0, 0, 1))
 
-        flat_grid = copy.deepcopy(self.map.reshape((self.occ_map.map_size,)))
+        flat_grid = copy.deepcopy(self.map)
         for i in range(self.occ_map.map_size):
             if flat_grid[i] > self.occ_map.prob_occ:
                 flat_grid[i] = 100
@@ -350,7 +375,7 @@ class TwoGPsMaps():
 
         grid_msg = OccupancyGrid()
         grid_msg.header.stamp = rospy.Time.now()
-        grid_msg.header.frame_id = "map"
+        grid_msg.header.frame_id = "map_world_frame"
 
         grid_msg.info.resolution = self.occ_map.map_res
         grid_msg.info.width = self.occ_map.width
@@ -371,7 +396,7 @@ class TwoGPsMaps():
         goal_msg = PoseStamped()
 
         goal_msg.header.stamp = rospy.Time.now()
-        goal_msg.header.frame_id = "map"
+        goal_msg.header.frame_id = "map_world_frame"
 
         if not self.expl_goal is None:
             goal_msg.pose = Pose(Point(self.expl_goal[0, 0], self.expl_goal[0, 1], 0),
